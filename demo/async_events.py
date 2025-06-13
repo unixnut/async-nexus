@@ -71,7 +71,7 @@ class DemoEventProducer(async_nexus.EventProducer):
             await asyncio.sleep(0.5)
 
 
-class DemoBigEventEmitter(async_nexus.EventEmitter):
+class DemoBigEventConverter(async_nexus.EventConverter):
     """async_nexus.Event source used in pull mode."""
 
 
@@ -87,7 +87,7 @@ class DemoBigEventEmitter(async_nexus.EventEmitter):
 
 
 
-class DemoEventEmitter(async_nexus.SimpleEventEmitter):
+class DemoEventConverter(async_nexus.SimpleEventConverter):
     """async_nexus.Event source used in pull mode."""
 
 
@@ -96,7 +96,7 @@ class DemoEventEmitter(async_nexus.SimpleEventEmitter):
         self.id_fn = id_fn
 
 
-    async def emit(self) -> async_nexus.Event:
+    async def obtain_event(self) -> async_nexus.Event:
         await asyncio.sleep(0.2)
         return async_nexus.Event(self.id_fn(), 50, 0, "hi")
 
@@ -145,8 +145,8 @@ async def go():
     nexus.add_handler(DemoEventType.THIRD, special_handler)
     nexus.add_handler(-1, default_handler)
 
-    nexus.add_emitter(DemoEventEmitter(nexus.next_id))
-    nexus.add_emitter(DemoBigEventEmitter(nexus.next_id))
+    nexus.add_converter(DemoEventConverter(nexus.next_id))
+    nexus.add_converter(DemoBigEventConverter(nexus.next_id))
 
     # Produces events with random IDs from DemoEventType (not including _MAX)
     nexus.add_producer(DemoEventProducer(event_factory=nexus))

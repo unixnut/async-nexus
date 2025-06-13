@@ -105,16 +105,16 @@ class EventFactory:
 
 
 
-class SimpleEventEmitter(metaclass=abc.ABCMeta):
-    """Event source used in pull mode."""
+class SimpleEventConverter(metaclass=abc.ABCMeta):
+    """Event source used in pull mode.  Blocks until an event is ready."""
 
     @abc.abstractmethod
-    async def emit(self) -> Event:
+    async def obtain_event(self) -> Event:
         pass
 
 
 
-class EventEmitter(SimpleEventEmitter):
+class EventConverter(SimpleEventConverter):
     """Event source used in pull mode that uses a generator internally."""
 
     def __init__(self):
@@ -126,7 +126,7 @@ class EventEmitter(SimpleEventEmitter):
         yield None
 
 
-    async def emit(self) -> Event:
+    async def obtain_event(self) -> Event:
         """
         Gets one event.
 
@@ -143,24 +143,41 @@ class EventEmitter(SimpleEventEmitter):
 class EventProducer(metaclass=abc.ABCMeta):
     """
     Event source used in push mode.  Can send each event to one or more nexus
-    objects.
+    objects.  Unlike :class:`SimpleEventConverter`, :class:`EventProducer`
+    emits events whenever they are ready, without being asked.
 
     It's up to an object of each subclass to manage its own flow of control.
 
     :ivar nexus_list: Maintains the list of AsyncEventNexus objects to send to
         :type nexus_list: List[AsyncEventNexus]
+    :ivar event_factory:   Optional object that subclasses may use to create :class:`Event` objects
+        :type event_factory: Optional[EventFactory]
     """
 
     def __init__(self, event_factory: Optional[EventFactory] = None):
+        """
+        :param event_factory:   Optional object that subclasses may use to create :class:`Event` objects
+        """
+
         self.nexus_list = []
         self.event_factory = event_factory
 
 
     def register_nexus(self, nexus: AbstractNexus) -> None:
+        """
+        Mandatory method that must be called for each nexus that this producer
+        is to be associated with.
+        """
+
         self.nexus_list.append(nexus)
 
 
     async def start(self) -> None:
+        """
+        Optionally, kicks off any actions the producer needs to do in order to
+        start producing events.  Subclasses must call ``await super().start()``.
+        """
+
         if not self.nexus_list:
             raise errors.MisconfiguredEventProducer("No nexus objects registered")
 
@@ -176,8 +193,8 @@ class AsyncEventNexus(Handler, AbstractNexus, EventFactory):
     An event handler must accept as an argument, being the queue into which any
     secondary events are added.
 
-    :ivar emitters: Objects with async emit() methods
-        :type emitters: List[SimpleEventEmitter]
+    :ivar converters: Objects with async obtain_event() methods
+        :type converters: List[SimpleEventConverter]
     :ivar producers: Objects with register_nexus() methods
         :type producers: List[EventProducer]
     """
@@ -199,7 +216,7 @@ class AsyncEventNexus(Handler, AbstractNexus, EventFactory):
         self.handlers: Union[Dict[int, HandlerType], Dict[int, List[HandlerType]]] = {}
         self.queue = asyncio.Queue(maxsize=self.QUEUE_MAXLEN)
         self.multiple = multiple
-        self.emitters = []
+        self.converters = []
         self.producers = []
 
 
@@ -221,8 +238,8 @@ class AsyncEventNexus(Handler, AbstractNexus, EventFactory):
                 raise LookupError("Handler for type %d already present" % type)
 
 
-    def add_emitter(self, emitter: SimpleEventEmitter) -> None:
-        self.emitters.append(emitter)
+    def add_converter(self, converter: SimpleEventConverter) -> None:
+        self.converters.append(converter)
 
 
     def add_producer(self, producer: EventProducer) -> None:
@@ -281,7 +298,9 @@ class AsyncEventNexus(Handler, AbstractNexus, EventFactory):
     async def loop_forever(self) -> None:
         """
         The main Async Nexus loop.  Starts producers, then loops forever
-        consuming and distributing events from emitters.
+        consuming and distributing events from converters.  In parallel to
+        this, any registered producers will feed events into the queue
+        unprompted.
         """
 
         for producer in self.producers:
@@ -289,30 +308,30 @@ class AsyncEventNexus(Handler, AbstractNexus, EventFactory):
 
         # TO-DO: task cancellation with event arising
 
-        async def replace_future(task_to_emitter_mapping: Dict[asyncio.Task, SimpleEventEmitter],
+        async def replace_future(task_to_converter_mapping: Dict[asyncio.Task, SimpleEventConverter],
                                  done_future: asyncio.Task) -> None:
             """Replace a task/future that's ready and reuse the rest."""
-            emitter = task_to_emitter_mapping[done_future]
-            del task_to_emitter_mapping[done_future]
-            new_future = asyncio.create_task(emitter.emit())
-            task_to_emitter_mapping[new_future] = emitter
+            converter = task_to_converter_mapping[done_future]
+            del task_to_converter_mapping[done_future]
+            new_future = asyncio.create_task(converter.obtain_event())
+            task_to_converter_mapping[new_future] = converter
 
-        task_to_emitter_mapping: Dict[asyncio.Task, SimpleEventEmitter] = {asyncio.create_task(emitter.emit()): emitter for emitter in self.emitters}
+        task_to_converter_mapping: Dict[asyncio.Task, SimpleEventConverter] = {asyncio.create_task(converter.obtain_event()): converter for converter in self.converters}
         try:
             while True:
-                emitter_futures: List[asyncio.Task] = task_to_emitter_mapping.keys()
-                d, p = await asyncio.wait(emitter_futures, return_when=asyncio.FIRST_COMPLETED)
+                converter_futures: List[asyncio.Task] = task_to_converter_mapping.keys()
+                d, p = await asyncio.wait(converter_futures, return_when=asyncio.FIRST_COMPLETED)
                 for done_future in d:
                     try:
                         # Task::result() might raise
                         await self.ingest(done_future.result())
                     except errors.NoMoreEvents:
-                        # Remove references to the emitter from the dict and the list
-                        removed_emitter_index = self.emitters.index(task_to_emitter_mapping[done_future])
-                        del self.emitters[removed_emitter_index]
-                        del task_to_emitter_mapping[done_future]
+                        # Remove references to the converter from the dict and the list
+                        removed_converter_index = self.converters.index(task_to_converter_mapping[done_future])
+                        del self.converters[removed_converter_index]
+                        del task_to_converter_mapping[done_future]
                     else:
-                        await replace_future(task_to_emitter_mapping, done_future)
+                        await replace_future(task_to_converter_mapping, done_future)
 
         except KeyboardInterrupt:
             pass
