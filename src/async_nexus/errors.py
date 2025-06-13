@@ -8,3 +8,7 @@ class UnhandledEvent(Exception):
 
 class MisconfiguredEventProducer(Exception):
     pass
+
+
+class MultipleStart(Exception):
+    pass

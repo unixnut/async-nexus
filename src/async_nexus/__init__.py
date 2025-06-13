@@ -188,6 +188,129 @@ class EventProducer(metaclass=abc.ABCMeta):
 
 
 
+class Timer(EventProducer):
+    """
+    Represents one of several types of integer ticker, or a one-shot, timer
+    that can be started/stopped and emits an event each time it fires.
+
+    Timer intervals might be longer than specified if other tasks block.
+
+    Don't use this class for anything other than creating events.
+
+    :ivar interval:         How long (in seconds) the timer should run before emitting an event
+    :ivar type:             What type of timer is being created (one of the below values)
+    :ivar starting_value:   The value to start with
+    :ivar ending_value:     The value to count up to or down from
+    :ivar direction_value:  The value added each iteration
+    :ivar task:             asyncio.Task
+    :ivar event_type:       The numeric type to be used when an event it created
+    :ivar event_factory:    Optional object used to create :class:`Event` objects
+    """
+
+    # Timeer type values
+    COUNT_UP   = 1
+    COUNT_DOWN = 2
+    ONGOING    = 3  # Like COUNT_UP but repeats forever
+    ONE_SHOT   = 4  # Equivalent to COUNT_UP with count=1
+
+
+    def __init__(self, interval: float, *, event_type: int, type: int = ONE_SHOT, count: int = 0, event_factory: Optional[EventFactory] = None):
+        """
+        :param event_factory:  Required unless a subclass overrides :method:`timer_fired` to create events
+        """
+
+        super().__init__(event_factory)
+
+        if type == self.COUNT_DOWN:
+            if count <= 0:
+                raise ValueError("Countdown value invalid")
+            self.starting_value = count
+            self.ending_value = 0
+            self.direction_value = -1
+        elif type == self.COUNT_UP:
+            if count <= 0:
+                raise ValueError("Countup value invalid") 
+            self.starting_value = 0
+            self.ending_value = count
+            self.direction_value = 1
+        elif type == self.ONGOING:
+            if count != 0:
+                raise ValueError("Counter value supplied when irrelevant") 
+            self.starting_value = 0
+            self.ending_value = -1
+            self.direction_value = 1
+        elif type == self.ONE_SHOT:
+            if not 0 <= count <= 1:
+                raise ValueError("Oneshot value invalid") 
+            self.starting_value = 0
+            self.ending_value = 1
+            self.direction_value = 1
+        else:
+            raise ValueError("Invalid timer type " + str(type)) 
+        self.task = None
+        self.type = type
+        self.event_type = event_type
+        self.interval = interval
+
+
+    async def start(self) -> asyncio.Task:
+        """
+        Kicks off actions the producer needs to do in order to
+        start producing events.  Subclasses must call ``await super().start()``.
+        """
+
+        await super().start()
+        if self.task:
+            raise errors.MultipleStart("Timer already started")
+        self.task = asyncio.create_task(self.run())
+        await asyncio.sleep(0)   # Give the task a chance to start
+        return self.task
+
+
+    def stop(self) -> bool:
+        """
+        Cancel the timer's task.
+
+        :returns: True if the timer task was cancelled (or never run) or False if it had already run
+        """
+
+        if not self.task:
+            return True
+        else:
+            return_value: bool = not (self.task.done() and not self.task.cancelled())
+            self.task.cancel()
+            self.task = None
+            return return_value
+
+
+    async def run(self):
+        """Emit an event after each timed interval."""
+
+        value = self.starting_value
+        while value != self.ending_value:
+            await asyncio.sleep(self.interval)
+            value += self.direction_value
+            # Timer has fired
+            event = self.create_event(value)
+            await self.distribute_event(event)
+        # Won't return if self.type == ONGOING
+        ## print(str(self.task) + " done.")
+        self.task = None
+
+
+    def create_event(self, value: int):
+        """
+        Called each time the timer fires.
+
+        Don't call ``super().create_event()`` if overriding.
+
+        :param value: The current count down or count up value
+        """
+
+        return self.event_factory.create_event(value, type=self.event_type)
+
+
+
 class AsyncEventNexus(Handler, AbstractNexus, EventFactory):
     """
     An event handler must accept as an argument, being the queue into which any
@@ -303,8 +426,7 @@ class AsyncEventNexus(Handler, AbstractNexus, EventFactory):
         unprompted.
         """
 
-        for producer in self.producers:
-            await producer.start()
+        await asyncio.gather(*[producer.start() for producer in self.producers])
 
         # TO-DO: task cancellation with event arising
 

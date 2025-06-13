@@ -65,7 +65,7 @@ class DemoEventProducer(async_nexus.EventProducer):
 
     async def create_events(self):
         while True:
-            type = random.randint(0, DemoEventType._MAX)
+            type = random.randint(DemoEventType.FIRST, DemoEventType._MAX - 1)
             event = self.event_factory.create_event("hello", type=type)
             await self.distribute_event(event)
             await asyncio.sleep(0.5)
@@ -150,6 +150,8 @@ async def go():
 
     # Produces events with random IDs from DemoEventType (not including _MAX)
     nexus.add_producer(DemoEventProducer(event_factory=nexus))
+    nexus.add_producer(async_nexus.Timer(interval=4, event_type=100, event_factory=nexus))
+    nexus.add_producer(async_nexus.Timer(interval=1.5, type=async_nexus.Timer.COUNT_UP, count=7, event_type=101, event_factory=nexus))
 
     teapot_task = asyncio.create_task(teapot(nexus))
 
