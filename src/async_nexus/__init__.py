@@ -262,7 +262,7 @@ class Timer(EventProducer):
         await super().start()
         if self.task:
             raise errors.MultipleStart("Timer already started")
-        self.task = asyncio.create_task(self.run())
+        self.task = asyncio.create_task(self._loop())
         await asyncio.sleep(0)   # Give the task a chance to start
         return self.task
 
@@ -283,7 +283,7 @@ class Timer(EventProducer):
             return return_value
 
 
-    async def run(self):
+    async def _loop(self):
         """Emit an event after each timed interval."""
 
         value = self.starting_value
@@ -426,7 +426,7 @@ class AsyncEventNexus(Handler, AbstractNexus, EventFactory):
         unprompted.
         """
 
-        await asyncio.gather(*[producer.start() for producer in self.producers])
+        await asyncio.gather(*(producer.start() for producer in self.producers))
 
         # TO-DO: task cancellation with event arising
 
