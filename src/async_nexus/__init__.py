@@ -30,10 +30,20 @@ if not hasattr(__builtins__, 'anext'):
 @dataclass
 class Event:
     id:       int
-    type:     int
+    type:     Union[int, str]
     # Lower integers represent higher priorities
     priority: int
     payload:  str
+
+
+
+class NamedEvent(Event, metaclass=abc.ABCMeta):
+    """
+    The qualified name of any given subclass is now used as its type.
+    """
+
+    def __init__(self, id: int, payload: str, *, priority: int = 0):
+        super().__init__(id, type(self).__qualname__, priority, payload)
 
 
 
@@ -71,7 +81,7 @@ class EventConsumer(metaclass=abc.ABCMeta):
 # If a Callable it should actually be a coroutine function, or if a
 # :class:`EventConsumer` is used its ``handle`` method be a coroutine function
 HandlerType = Union[Callable[[Event, asyncio.Queue], None], EventConsumer]
-
+FilterType = Callable[[Event, asyncio.Queue], bool]
 
 
 class AsyncEventPriorityQueue(metaclass=abc.ABCMeta):
@@ -111,7 +121,7 @@ class EventFactory:
         return random.randint(1, 1000)
 
 
-    def create_event(self, payload, *, type: int, id: int = AUTO, priority: int = 0) -> Event:
+    def create_event(self, payload, *, type: Union[int, str], id: int = AUTO, priority: int = 0) -> Event:
         """
         Convenient wrapper around :class:`Event` constructor.
 
@@ -141,8 +151,8 @@ class EventFactory:
 class EventSource(metaclass=abc.ABCMeta):
     async def start(self) -> None:
         """
-        Any subclass's :meth:`start` coroutine (if
-        any) must call ``await super().start()``.
+        Any subclass's :meth:`start` coroutine (if any) must call
+        ``await super().start()``.
         """
         pass
 
@@ -270,7 +280,7 @@ class Timer(EventProducer):
     ONE_SHOT   = 4  # Equivalent to COUNT_UP with count=1
 
 
-    def __init__(self, interval: float, *, event_type: int, type: int = ONE_SHOT, count: int = 0, event_factory: Optional[EventFactory] = None):
+    def __init__(self, interval: float, *, event_type: Union[int, str], type: int = ONE_SHOT, count: int = 0, event_factory: Optional[EventFactory] = None):
         """
         :param event_factory:  Required unless a subclass overrides :method:`timer_fired` to create events
         """
@@ -387,21 +397,25 @@ class AsyncEventNexus(EventDispatcher, AbstractNexus, EventFactory):
     def __init__(self, multiple: bool = False, bitmode: bool = False):
         """
         :param multiple: Allow multiple handlers per event type
-        :param bitmode:  if True, means that event categories can only be powers of 2 and handlers can be associated with a bitmask
+        :param bitmode:  if True, means that event types can only be powers of 2 and handlers can be associated with a bitmask
         """
 
         super().__init__()
         if bitmode:
             raise NotImplementedError
-        # There's either a single handler for each event type or a list if self.multiple is True
-        self.handlers: Union[Dict[int, HandlerType], Dict[int, List[HandlerType]]] = {}
+        # A map of predicates that can choose to accept an event or pass it on
+        # (and if none accept it it will be given to the handler(s))
+        self.filters: Set[FilterType] = set()
+        # Either a mapping of each event type (or -1 for any) to a handler, OR
+        # if self.multiple is True, a mapping of event type / -1 to a list of handlers.
+        self.handlers: Union[Dict[Union[int, str], HandlerType], Dict[Union[int, str], List[HandlerType]]] = {}
         self.queue = asyncio.Queue(maxsize=self.QUEUE_MAXLEN)
         self.multiple = multiple
         self.converters = []
         self.producers = []
 
 
-    def add_handler(self, type: int, handler: HandlerType):
+    def add_handler(self, type: Union[int, str], handler: HandlerType):
         """
         :param type: The type of event to handle, or -1 for events with no dedicated handler
         :param handler: If it's a Callable, it will be called or if it's a Coroutine it will be awaited
@@ -416,7 +430,15 @@ class AsyncEventNexus(EventDispatcher, AbstractNexus, EventFactory):
             if type not in self.handlers:
                 self.handlers[type] = handler
             else:
-                raise LookupError("Handler for type %d already present" % type)
+                raise LookupError("Handler for type %s already present" % type)
+
+
+    def add_filter(self, handler: FilterType):
+        """
+        :param handler: A Callable to be awaited when an event is received
+        """
+
+        self.filters.add(handler)
 
 
     def add_converter(self, converter: SimpleEventConverter) -> None:
@@ -466,6 +488,7 @@ class AsyncEventNexus(EventDispatcher, AbstractNexus, EventFactory):
     async def dispatch(self, event: Event) -> None:
         try:
             if self.multiple:
+                # This would need handlers to be of type FilterType
                 ## for handler in self.handlers[event.type]:
                 ##     handled = await handler(event, self.queue)
                 ##     if handled:
@@ -473,20 +496,28 @@ class AsyncEventNexus(EventDispatcher, AbstractNexus, EventFactory):
                 ## else:
                 ##     # It might not be a good idea to fall through to the generic handler list
                 ##     for handler in self.handlers[-1]:
-                ##         handled = await handler(event, self.queue)
+                ##         handled: bool = await handler(event, self.queue)
                 ##         if handled:
                 ##             break
                 ##     else:
                 ##         raise errors.UnhandledEvent("Generic handlers all refused event")
                 raise NotImplementedError
             else:
-                try:
-                    handler = self.handlers[event.type]
-                except KeyError:
-                    handler = self.handlers[-1]
-                await create_handler_coro(handler, event, self.queue)
+                # Try filters until one accepts the event and if so, stop processing
+                for handler in self.filters:
+                    handled: bool = await create_handler_coro(handler, event, self.queue)
+                    if handled:
+                        break
+                else:
+                    try:
+                        # Otherwise, check for a type-specific handler
+                        handler = self.handlers[event.type]
+                    except KeyError:
+                        # Failing that, check for a generic handler
+                        handler = self.handlers[-1]
+                    await create_handler_coro(handler, event, self.queue)
         except KeyError:
-            raise errors.UnhandledEvent("No available event handler for event with ID=%d and type=%d" % (event.id, event.type), event)
+            raise errors.UnhandledEvent("No available event handler for event with ID=%d and type=%s" % (event.id, event.type), event)
 
 
     async def loop_forever(self) -> None:
@@ -572,7 +603,7 @@ class EventFanout(EventConsumer):
 
 
 # *** FUNCTIONS ***
-def create_handler_coro(handler: HandlerType, event: Event, queue: asyncio.Queue) -> Coroutine:
+def create_handler_coro(handler: Union[HandlerType, FilterType], event: Event, queue: asyncio.Queue) -> Coroutine:
     """
     Supports calling dynamic handlers that are either a coroutine
     function/method, or a :class:`EventConsumer` object.  Note that this

@@ -51,6 +51,10 @@ allowed_long_options=['help']
 DemoEventType = IntEnum('DemoEventType', "FIRST SECOND THIRD _MAX")
 
 
+class Treacle(async_nexus.NamedEvent):
+    pass
+
+
 
 class DemoEventProducer(async_nexus.EventProducer):
     """
@@ -125,6 +129,12 @@ async def teapot(nexus: async_nexus.AsyncEventNexus) -> None:
     await nexus.ingest(event)
 
 
+async def treacle(nexus: async_nexus.AsyncEventNexus) -> None:
+    await asyncio.sleep(2)
+    event = Treacle(1002, "Where's the crumpets?!")
+    await nexus.ingest(event)
+
+
 async def handler_for_10(event: async_nexus.Event, queue: asyncio.Queue):
     print("[%d] %s" % (event.id, event.payload))
 
@@ -133,12 +143,24 @@ async def special_handler(event: async_nexus.Event, queue: asyncio.Queue):
     print("type=%s [%d] %s" % (DemoEventType(event.type).name, event.id, event.payload))
 
 
+async def low_id_filter(event: async_nexus.Event, queue: asyncio.Queue) -> bool:
+    if event.id < 5:
+        try:
+            print("type=%s [[%d]] %s" % (DemoEventType(event.type).name, event.id, event.payload))
+        except ValueError:
+            print("type=%s [[%d]] %s" % (str(event.type), event.id, event.payload))
+        return True
+    else:
+        return False
+
+
 async def default_handler(event: async_nexus.Event, queue: asyncio.Queue):
-    print("type=%d [%d] %s" % (event.type, event.id, event.payload))
+    print("type=%s [%d] %s" % (str(event.type), event.id, event.payload))
 
 
 async def go():
     nexus = async_nexus.AsyncEventNexus()
+    nexus.add_filter(low_id_filter)
     nexus.add_handler(10, handler_for_10)
     nexus.add_handler(DemoEventType.FIRST, special_handler)
     nexus.add_handler(DemoEventType.SECOND, special_handler)
@@ -154,6 +176,7 @@ async def go():
     nexus.add_producer(async_nexus.Timer(interval=1.5, type=async_nexus.Timer.COUNT_UP, count=7, event_type=101, event_factory=nexus))
 
     teapot_task = asyncio.create_task(teapot(nexus))
+    treacle_task = asyncio.create_task(treacle(nexus))
 
     await nexus.loop_forever()
 
