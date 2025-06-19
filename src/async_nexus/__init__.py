@@ -13,7 +13,8 @@ import abc
 import itertools
 from dataclasses import dataclass
 import random
-from enum import IntEnum
+from enum import Enum
+import weakref
 
 from . import errors
 
@@ -214,6 +215,8 @@ class EventProducer(EventSource, metaclass=abc.ABCMeta):
     They shouldn't do anything other than allocate resources until
     :meth:`start` is awaited.
 
+    Uses weak references to stop circular references from preventing garbage collection.
+
     :ivar nexus_list: Maintains the list of AsyncEventNexus objects to send to
         :type nexus_list: List[AsyncEventNexus]
     :ivar event_factory:   Optional object that subclasses may use to create :class:`Event` objects
@@ -225,8 +228,11 @@ class EventProducer(EventSource, metaclass=abc.ABCMeta):
         :param event_factory:   Optional object that subclasses may use to create :class:`Event` objects
         """
 
-        self.nexus_list = []
-        self.event_factory = event_factory
+        self.nexus_set: Set[AbstractNexus] = weakref.WeakSet()
+        if event_factory:
+            self.event_factory = weakref.proxy(event_factory)
+        else:
+            self.event_factory = None
 
 
     def register_nexus(self, nexus: AbstractNexus) -> None:
@@ -235,7 +241,7 @@ class EventProducer(EventSource, metaclass=abc.ABCMeta):
         is to be associated with.
         """
 
-        self.nexus_list.append(nexus)
+        self.nexus_set.add(nexus)
 
 
     async def start(self) -> None:
@@ -244,12 +250,12 @@ class EventProducer(EventSource, metaclass=abc.ABCMeta):
         start producing events.  Subclasses must call ``await super().start()``.
         """
 
-        if not self.nexus_list:
+        if not self.nexus_set:
             raise errors.MisconfiguredEventProducer("No nexus objects registered")
 
 
     async def distribute_event(self, event: Event) -> None:
-        for nexus in self.nexus_list:
+        for nexus in self.nexus_set:
             await nexus.ingest(event)
 
 
@@ -379,8 +385,18 @@ class Timer(EventProducer):
 
 class AsyncEventNexus(EventDispatcher, AbstractNexus, EventFactory):
     """
-    An event handler must accept as an argument, being the queue into which any
-    secondary events are added.
+    Distributes events to filters (see alias :class:`FilterType`) and/or
+    handlers (see alias :class:`HandlerType`) which must also accept a second
+    argument, being the queue into which any secondary events are added.
+
+    Can act as a context manager (non-async), which calls :meth:`cleanup`.
+
+    Either :meth:`loop_forever` must be awaited or :meth:`start` called (in
+    which case it runs the event loop in a separate task).
+
+    If :meth:`stop` is called or a task (external or internal) running
+    :meth:`loop_forever` is cancelled, or an error occurs, :meth:`cleanup` must
+    then be run unless in a ``with`` block.
 
     AsyncEventNexus objects cannot be currently be chained, i.e. one nexus
     can't be registered as a handler with another.
@@ -392,6 +408,7 @@ class AsyncEventNexus(EventDispatcher, AbstractNexus, EventFactory):
     """
 
     QUEUE_MAXLEN = 50
+    States = Enum('States', "READY STARTING LOOPING STOPPED")
 
 
     def __init__(self, multiple: bool = False, bitmode: bool = False):
@@ -413,6 +430,8 @@ class AsyncEventNexus(EventDispatcher, AbstractNexus, EventFactory):
         self.multiple = multiple
         self.converters = []
         self.producers = []
+        self.state = self.States.READY
+        self.loop_task: Optional[asyncio.Task] = None
 
 
     def add_handler(self, type: Union[int, str], handler: HandlerType):
@@ -465,6 +484,9 @@ class AsyncEventNexus(EventDispatcher, AbstractNexus, EventFactory):
         All events (including secondary) are sequentially handled, i.e. not as
         tasks.  Any background tasks should be created as such by handlers.
         """
+
+        if self.state not in (self.States.STARTING, self.States.LOOPING):
+            raise errors.BadCall("AsyncEventNexus event loop not running")
 
         await self.queue.put(event)
 
@@ -528,10 +550,20 @@ class AsyncEventNexus(EventDispatcher, AbstractNexus, EventFactory):
         unprompted.
         """
 
-        # Start all event source objects
-        await asyncio.gather(*(source.start() for source in itertools.chain(self.producers, self.converters)))
+        if self.state in (self.States.STARTING, self.States.LOOPING):
+            raise errors.LoopAlreadyStarted("Spurious call to loop_forever()")
+        elif self.state is self.States.STOPPED:
+            raise errors.LoopStopped("No longer looping (spurious call to loop_forever())")
+        elif self.state is self.States.READY:
+            self.state = self.States.STARTING
+            # Start all event source objects
+            await asyncio.gather(*(source.start() for source in itertools.chain(self.producers, self.converters)))
+        # No need for self.States.STARTED because it transitions to
+        # self.States.LOOPING immediately
 
         # TO-DO: task cancellation with event arising
+
+        self.state = self.States.LOOPING
 
         async def replace_future(task_to_converter_mapping: Dict[asyncio.Task, SimpleEventConverter],
                                  done_future: asyncio.Task) -> None:
@@ -541,6 +573,9 @@ class AsyncEventNexus(EventDispatcher, AbstractNexus, EventFactory):
             new_future = asyncio.create_task(converter.obtain_event())
             task_to_converter_mapping[new_future] = converter
 
+        # This is not really an event loop, because events can be ingested
+        # and dispatched before this.  Converters won't be queried without it
+        # though.
         task_to_converter_mapping: Dict[asyncio.Task, SimpleEventConverter] = {asyncio.create_task(converter.obtain_event()): converter for converter in self.converters}
         try:
             while True:
@@ -558,10 +593,29 @@ class AsyncEventNexus(EventDispatcher, AbstractNexus, EventFactory):
                     else:
                         await replace_future(task_to_converter_mapping, done_future)
 
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, asyncio.CancelledError):
             pass
 
-        self.cleanup()
+        self.state = self.States.STOPPED
+
+
+    def start(self) -> asyncio.Task:
+        """
+        Start the event loop in the background, and return the task to be
+        optionally awaited (if it returns due to error or cancellation).
+        """
+
+        if self.state is not self.States.READY:
+            raise errors.InvalidLoopState("start() called when state is " + self.state.name)
+        if not self.loop_task:
+            self.loop_task = asyncio.create_task(self.loop_forever())
+            return self.loop_task
+        else:
+            raise errors.BadCall("AsyncEventNexus loop task already running")
+
+
+    def stop(self):
+        self.loop_task.cancel()
 
 
     def cleanup(self):
@@ -578,6 +632,18 @@ class AsyncEventNexus(EventDispatcher, AbstractNexus, EventFactory):
             except Exception:
                 pass
         self.handlers.clear()
+        self.filters.clear()
+
+
+    def __enter__(self):
+        if self.state is not self.States.READY or any((self.producers, self.converters)):
+            raise errors.BadCall("ContextManager entered for non-pristine nexus")
+        return self
+
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.cleanup()
+        return False  # ensure the exception, if any, is re-raised
 
 
 

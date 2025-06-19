@@ -159,27 +159,32 @@ async def default_handler(event: async_nexus.Event, queue: asyncio.Queue):
 
 
 async def go():
-    nexus = async_nexus.AsyncEventNexus()
-    nexus.add_filter(low_id_filter)
-    nexus.add_handler(10, handler_for_10)
-    nexus.add_handler(DemoEventType.FIRST, special_handler)
-    nexus.add_handler(DemoEventType.SECOND, special_handler)
-    nexus.add_handler(DemoEventType.THIRD, special_handler)
-    nexus.add_handler(-1, default_handler)
+    with async_nexus.AsyncEventNexus() as nexus:
+        nexus.add_filter(low_id_filter)
+        nexus.add_handler(10, handler_for_10)
+        nexus.add_handler(DemoEventType.FIRST, special_handler)
+        nexus.add_handler(DemoEventType.SECOND, special_handler)
+        nexus.add_handler(DemoEventType.THIRD, special_handler)
+        nexus.add_handler(-1, default_handler)
 
-    nexus.add_converter(DemoEventConverter(nexus.next_id))
-    nexus.add_converter(DemoBigEventConverter(nexus.next_id))
+        nexus.add_converter(DemoEventConverter(nexus.next_id))
+        nexus.add_converter(DemoBigEventConverter(nexus.next_id))
 
-    # Produces events with random IDs from DemoEventType (not including _MAX)
-    nexus.add_producer(DemoEventProducer(event_factory=nexus))
-    nexus.add_producer(async_nexus.Timer(interval=4, event_type=100, event_factory=nexus))
-    nexus.add_producer(async_nexus.Timer(interval=1.5, type=async_nexus.Timer.COUNT_UP, count=7, event_type=101, event_factory=nexus))
+        # Produces events with random IDs from DemoEventType (not including _MAX)
+        nexus.add_producer(DemoEventProducer(event_factory=nexus))
+        nexus.add_producer(async_nexus.Timer(interval=4, event_type=100, event_factory=nexus))
+        nexus.add_producer(async_nexus.Timer(interval=1.5, type=async_nexus.Timer.COUNT_UP, count=7, event_type=101, event_factory=nexus))
 
-    teapot_task = asyncio.create_task(teapot(nexus))
-    treacle_task = asyncio.create_task(treacle(nexus))
+        teapot_task = asyncio.create_task(teapot(nexus))
+        treacle_task = asyncio.create_task(treacle(nexus))
 
-    await nexus.loop_forever()
+        ## await nexus.loop_forever()
+        try:
+            await asyncio.wait_for(nexus.start(), 7)
+        except (TimeoutError, asyncio.exceptions.TimeoutError):
+            print("Done.")
 
+    ## print(nexus.filters)
 
 
 # *** MAINLINE ***

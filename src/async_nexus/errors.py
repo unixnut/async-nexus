@@ -12,3 +12,19 @@ class MisconfiguredEventProducer(Exception):
 
 class MultipleStart(Exception):
     pass
+
+
+class BadCall(Exception):
+    pass
+
+
+class LoopAlreadyStarted(BadCall):
+    pass
+
+
+class LoopStopped(BadCall):
+    pass
+
+
+class InvalidLoopState(BadCall):
+    pass
