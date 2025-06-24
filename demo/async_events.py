@@ -154,17 +154,26 @@ async def low_id_filter(event: async_nexus.Event, queue: asyncio.Queue) -> bool:
         return False
 
 
+async def ping(event: async_nexus.Event, queue: asyncio.Queue):
+    print("ping!")
+
+
 async def default_handler(event: async_nexus.Event, queue: asyncio.Queue):
     print("type=%s [%d] %s" % (str(event.type), event.id, event.payload))
 
 
 async def go():
     with async_nexus.AsyncEventNexus() as nexus:
+        fanout = async_nexus.EventFanout()
+        fanout.register(ping)
+        fanout.register(default_handler)
+
         nexus.add_filter(low_id_filter)
         nexus.add_handler(10, handler_for_10)
         nexus.add_handler(DemoEventType.FIRST, special_handler)
         nexus.add_handler(DemoEventType.SECOND, special_handler)
         nexus.add_handler(DemoEventType.THIRD, special_handler)
+        nexus.add_handler(100, fanout)
         nexus.add_handler(-1, default_handler)
 
         nexus.add_converter(DemoEventConverter(nexus.next_id))

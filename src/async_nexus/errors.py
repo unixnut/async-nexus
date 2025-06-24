@@ -6,15 +6,19 @@ class UnhandledEvent(Exception):
     pass
 
 
-class MisconfiguredEventProducer(Exception):
+class BadCall(Exception):
+    pass
+
+
+class MisconfiguredEventProducer(BadCall):
+    pass
+
+
+class MisconfiguredEventConsumer(BadCall):
     pass
 
 
 class MultipleStart(Exception):
-    pass
-
-
-class BadCall(Exception):
     pass
 
 

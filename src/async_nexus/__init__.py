@@ -558,6 +558,7 @@ class AsyncEventNexus(EventDispatcher, AbstractNexus, EventFactory):
             self.state = self.States.STARTING
             # Start all event source objects
             await asyncio.gather(*(source.start() for source in itertools.chain(self.producers, self.converters)))
+
         # No need for self.States.STARTED because it transitions to
         # self.States.LOOPING immediately
 
@@ -656,15 +657,32 @@ class EventFanout(EventConsumer):
     """
 
     def __init__(self):
-        self.handlers: List[HandlerType] = []
+        self.handlers: Set[HandlerType] = set()
 
 
     def register(self, handler: HandlerType):
-        self.handlers.append(handler)
+        self.handlers.add(handler)
+
+
+    def deregister(self, handler: HandlerType):
+        self.handlers.remove(handler)
 
 
     async def handle(self, event: Event, queue: asyncio.Queue) -> None:
-        await asyncio.gather(*(create_handler_coro(handler) for handler in self.handlers))
+        if not self.handlers:
+            raise errors.MisconfiguredEventConsumer("No handler objects registered")
+
+        await asyncio.gather(*(create_handler_coro(handler, event, queue) for handler in self.handlers))
+
+
+
+class EventDiscarder(EventConsumer):
+    """
+    Event consumer that discards each event.
+    """
+
+    async def handle(self, event: Event, queue: asyncio.Queue) -> None:
+        pass
 
 
 
