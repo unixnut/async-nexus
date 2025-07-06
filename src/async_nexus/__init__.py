@@ -5,7 +5,7 @@ __email__ = 'alastair@plug.org.au'
 __version__ = '0.1.0'
 
 
-from typing import Set, Dict, Sequence, Tuple, List, Union, AnyStr, Iterable, Callable, Generator, Type, Optional, TextIO, IO, Coroutine
+from typing import Set, Dict, Sequence, Tuple, List, Union, AnyStr, Iterable, Callable, Generator, Type, TypeVar, Optional, TextIO, IO, Coroutine
 
 import time
 import asyncio
@@ -83,6 +83,9 @@ class EventConsumer(metaclass=abc.ABCMeta):
 # :class:`EventConsumer` is used its ``handle`` method be a coroutine function
 HandlerType = Union[Callable[[Event, asyncio.Queue], None], EventConsumer]
 FilterType = Callable[[Event, asyncio.Queue], bool]
+# This is needed to satisfy the type checker; see `help(typing.Type)`
+NamedEventTypeVar = TypeVar('NamedEventTypeVar', bound=NamedEvent)
+EventType = Union[int, str, Type[NamedEventTypeVar]]
 
 
 class AsyncEventPriorityQueue(metaclass=abc.ABCMeta):
@@ -122,30 +125,43 @@ class EventFactory:
         return random.randint(1, 1000)
 
 
-    def create_event(self, payload, *, type: Union[int, str], id: int = AUTO, priority: int = 0) -> Event:
+    def create_event(self, payload, *, event_type: EventType, id: int = AUTO, priority: int = 0) -> Event:
         """
-        Convenient wrapper around :class:`Event` constructor.
+        Convenient wrapper around :class:`Event` constructor.  Also handles
+        NamedEvent subclasses.
 
-        Hint: for event types, use non-overlapping enum.IntEnum subclasses.
-        Then when creating log messages etc., you can cast the event type back
-        to the relevant subclass and use the ``.name`` attribute of the
-        resulting object.  To determine the type category (group of types
-        represented by a given subclass), attempt to cast the type to the first
-        subclass and if you catch :class:`ValueError` try the next subclass,
-        and so on.
+        Hint: for integer event types, use non-overlapping enum.IntEnum
+        subclasses.  Then when creating log messages etc., you can cast the
+        event event_type back to the relevant subclass and use the ``.name``
+        attribute of the resulting object.  To determine the event_type category
+        (group of types represented by a given subclass), attempt to cast the
+        event_type to the first subclass and if you catch :class:`ValueError` try the
+        next subclass, and so on.
 
-        :param payload:  A generic payload to include in the event
-        :param type:     Numeric event type; keyword only parameter
-        :param id:       Numeric event ID, or a sequential event ID if ``AUTO``, or a random one if ``RANDOM``
-        :param priority: Optional priority, with lower integers representing higher priorities
+        :param payload:     A generic payload to include in the event
+        :param event_type:  Event type or class; keyword only parameter
+        :param id:          Numeric event ID, or a sequential event ID if ``AUTO``, or a random one if ``RANDOM``
+        :param priority:    Optional priority, with lower integers representing higher priorities
         """
+
+        # Make a lambda that will either create an object of the specified
+        # NamedEvent subclass or a basic Event object if ``event_type`` is a
+        # simple object
+        if isinstance(event_type, type):
+            if issubclass(event_type, NamedEvent):
+                _create_event = lambda id: event_type(id=id, payload=payload, priority=priority)
+            else:
+                raise TypeError("Invalid type for event object class: " + event_type.__name__)
+        else:
+            # event_type is a scalar
+            _create_event = lambda id: Event(id, event_type, priority, payload)
 
         if id == self.AUTO:
-            return Event(self.next_id(), type, priority, payload)
+            return _create_event(self.next_id())
         elif id == self.RANDOM:
-            return Event(self.random_id(), type, priority, payload)
+            return _create_event(self.random_id())
         else:
-            return Event(id, type, priority, payload)
+            return _create_event(id)
 
 
 
@@ -275,7 +291,7 @@ class Timer(EventProducer):
     :ivar ending_value:     The value to count up to or down from
     :ivar direction_value:  The value added each iteration
     :ivar task:             asyncio.Task
-    :ivar event_type:       The numeric type to be used when an event it created
+    :ivar event_type:       The numeric type to be used when an event is created
     :ivar event_factory:    Optional object used to create :class:`Event` objects
     """
 
@@ -286,7 +302,7 @@ class Timer(EventProducer):
     ONE_SHOT   = 4  # Equivalent to COUNT_UP with count=1
 
 
-    def __init__(self, interval: float, *, event_type: Union[int, str], type: int = ONE_SHOT, count: int = 0, event_factory: Optional[EventFactory] = None):
+    def __init__(self, interval: float, *, event_type: EventType, type: int = ONE_SHOT, count: int = 0, event_factory: Optional[EventFactory] = None):
         """
         :param event_factory:  Required unless a subclass overrides :method:`timer_fired` to create events
         """
@@ -379,7 +395,7 @@ class Timer(EventProducer):
         :param value: The current count down or count up value
         """
 
-        return self.event_factory.create_event(value, type=self.event_type)
+        return self.event_factory.create_event(value, event_type=self.event_type)
 
 
 

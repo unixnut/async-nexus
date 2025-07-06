@@ -21,7 +21,7 @@ class AsyncEventBoundary(async_nexus.EventProducer, async_nexus.EventConsumer):
     def __init__(self):
         super().__init__()
         self.queue = asyncio.Queue(maxsize=self.QUEUE_MAXLEN)
-        self.ready = True
+        self.ready: bool = True
 
 
     async def start(self):

@@ -70,9 +70,10 @@ class DemoEventProducer(async_nexus.EventProducer):
     async def create_events(self):
         while True:
             type = random.randint(DemoEventType.FIRST, DemoEventType._MAX - 1)
-            event = self.event_factory.create_event("hello", type=type)
+            event = self.event_factory.create_event("hello", event_type=type)
             await self.distribute_event(event)
             await asyncio.sleep(0.5)
+
 
 
 class DemoBigEventConverter(async_nexus.EventConverter):
