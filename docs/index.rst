@@ -1,5 +1,5 @@
 Welcome to Async Nexus's documentation!
-======================================
+=======================================
 
 .. toctree::
    :maxdepth: 2

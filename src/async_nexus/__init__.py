@@ -30,6 +30,8 @@ if not hasattr(__builtins__, 'anext'):
 # *** CLASSES ***
 @dataclass
 class Event:
+    """A simple event dataclass."""
+
     id:       int
     type:     Union[int, str]
     # Lower integers represent higher priorities
@@ -41,6 +43,8 @@ class Event:
 class NamedEvent(Event, metaclass=abc.ABCMeta):
     """
     The qualified name of any given subclass is now used as its type.
+
+    Note that the parameter order is different to :class:`Event`.
     """
 
     def __init__(self, id: int, payload: str, *, priority: int = 0):
@@ -52,7 +56,7 @@ class EventDispatcher:
     """Dispatches events to registered handlers."""
 
     @abc.abstractmethod
-    async def dispatch(self, event: Event) -> None:
+    async def _dispatch(self, event: Event) -> None:
         pass
 
 
@@ -65,7 +69,7 @@ class EventConsumer(metaclass=abc.ABCMeta):
     different name in order to avoid confusion.
 
     Handlers must add secondary events (arising from the processing of events
-    the receive) to the queue, so the nexus can dispatch them.
+    they receive) to the queue, so the nexus can dispatch them.
     """
 
     @abc.abstractmethod
@@ -88,8 +92,21 @@ NamedEventTypeVar = TypeVar('NamedEventTypeVar', bound=NamedEvent)
 EventTypeID = Union[int, str, Type[NamedEventTypeVar]]
 
 
+
 class AsyncEventPriorityQueue(metaclass=abc.ABCMeta):
-    pass
+    """
+    Replacement for asyncio.Queue supporting multiple sub-queues that operate
+    on a priority basis.
+    """
+    # FIXME: After implementing, change GenericHandler and signatures on
+    # EventConsumer, AsyncEventNexus and boundaries.AsyncEventBoundary methods
+
+    def get_nowait(self) -> Event:
+        pass
+
+
+    async def put(self, event: Event):
+        pass
 
 
 
@@ -130,7 +147,7 @@ class EventFactory:
         Convenient wrapper around :class:`Event` constructor.  Also handles
         NamedEvent subclasses.
 
-        Hint: for integer event types, use non-overlapping enum.IntEnum
+        Hint: for integer event types, use non-overlapping :class:`enum.IntEnum`
         subclasses.  Then when creating log messages etc., you can cast the
         event event_type back to the relevant subclass and use the ``.name``
         attribute of the resulting object.  To determine the event_type category
@@ -139,7 +156,7 @@ class EventFactory:
         next subclass, and so on.
 
         :param payload:     A generic payload to include in the event
-        :param event_type:  Event type or class; keyword only parameter
+        :param event_type:  Event type or class (subclass of :class:`NamedEvent`); keyword only parameter
         :param id:          Numeric event ID, or a sequential event ID if ``AUTO``, or a random one if ``RANDOM``
         :param priority:    Optional priority, with lower integers representing higher priorities
         """
@@ -166,6 +183,8 @@ class EventFactory:
 
 
 class EventSource(metaclass=abc.ABCMeta):
+    """Abstract base class for anything that creates events.  Do not subclass."""
+
     async def start(self) -> None:
         """
         Any subclass's :meth:`start` coroutine (if any) must call
@@ -190,7 +209,11 @@ class SimpleEventConverter(EventSource):
 
 
 class EventConverter(SimpleEventConverter):
-    """Event source used in pull mode that uses a generator internally."""
+    """
+    Event source used in pull mode that uses an internal generator to produce a
+    stream of events.  Subclass this (instead of :class:`SimpleEventConverter`)
+    when more complicated processing is required, e.g. iterating over sequences.
+    """
 
     def __init__(self):
         self.gen: AsyncGenerator = self.event_generator()
@@ -202,13 +225,15 @@ class EventConverter(SimpleEventConverter):
 
 
     def close(self):
+        """Stop the parent and the generator."""
+
         super().close()
         return aclose(self.gen)
 
 
     async def obtain_event(self) -> Event:
         """
-        Gets one event.
+        Gets one event from the internal generator.
 
         :raises errors.NoMoreEvents: If it is not possible to get an event
         """
@@ -222,10 +247,10 @@ class EventConverter(SimpleEventConverter):
 
 class EventProducer(EventSource, metaclass=abc.ABCMeta):
     """
-    Event source used in push mode.  Can send each event to one or more nexus
+    Event source used in push mode.  Sends each event to one or more nexus
     objects.  Unlike :class:`SimpleEventConverter`, :class:`EventProducer`
     emits events whenever they are ready, without being asked.  Each nexus will
-    await :meth:`start` and call :meth:`close`.
+    await :meth:`start` and call :meth:`EventSource.close`.
 
     It's up to an object of each subclass to manage its own flow of control.
     They shouldn't do anything other than allocate resources until
@@ -271,6 +296,8 @@ class EventProducer(EventSource, metaclass=abc.ABCMeta):
 
 
     async def distribute_event(self, event: Event) -> None:
+        """Process the event through all nexuses."""
+
         for nexus in self.nexus_set:
             await nexus.ingest(event)
 
@@ -291,7 +318,7 @@ class Timer(EventProducer):
     :ivar ending_value:     The value to count up to or down from
     :ivar direction_value:  The value added each iteration
     :ivar task:             asyncio.Task
-    :ivar event_type:       The numeric type to be used when an event is created
+    :ivar event_type:       Event type or class (subclass of :class:`NamedEvent`) to be used when an event is created
     :ivar event_factory:    Optional object used to create :class:`Event` objects
     """
 
@@ -359,7 +386,7 @@ class Timer(EventProducer):
         """
         Cancel the timer's task.
 
-        :returns: True if the timer task was cancelled (or never run) or False if it had already run
+        :returns: ``True`` if the timer task was cancelled (or never run) or ``False`` if it had already run
         """
 
         if not self.task:
@@ -380,19 +407,22 @@ class Timer(EventProducer):
             value += self.direction_value
             # Timer has fired
             event = self.create_event(value)
-            await self.distribute_event(event)
+            if event:
+                await self.distribute_event(event)
+
         # Won't return if self.type == ONGOING
         ## print(str(self.task) + " done.")
         self.task = None
 
 
-    def create_event(self, value: int):
+    def create_event(self, value: int) -> Optional[Event]:
         """
         Called each time the timer fires.
 
         Don't call ``super().create_event()`` if overriding.
 
         :param value: The current count down or count up value
+        :returns: An event (if one is to be emitted on this cycle)
         """
 
         return self.event_factory.create_event(value, event_type=self.event_type)
@@ -414,13 +444,14 @@ class AsyncEventNexus(EventDispatcher, AbstractNexus, EventFactory):
     :meth:`loop_forever` is cancelled, or an error occurs, :meth:`cleanup` must
     then be run unless in a ``with`` block.
 
-    AsyncEventNexus objects cannot be currently be chained, i.e. one nexus
-    can't be registered as a handler with another.
+    AsyncEventNexus objects can be chained, i.e. one nexus
+    can indirectly be registered as a handler with another; see
+    :class:`boundaries.AsyncEventBoundary` (this is an experimental feature).
 
-    :ivar converters: Objects with async obtain_event() methods
-        :type converters: List[SimpleEventConverter]
-    :ivar producers: Objects with register_nexus() methods
-        :type producers: List[EventProducer]
+    :ivar converters: Sequence of objects with async obtain_event() methods
+    :ivar producers:  Sequence of objects with register_nexus() methods
+    :ivar handlers:   Sequence of :class:`GenericHandler` objects/callables
+    :ivar filters:    Sequence of :class:`FilterFunc` objects
     """
 
     QUEUE_MAXLEN = 50
@@ -438,7 +469,7 @@ class AsyncEventNexus(EventDispatcher, AbstractNexus, EventFactory):
             raise NotImplementedError
         # A map of predicates that can choose to accept an event or pass it on
         # (and if none accept it it will be given to the handler(s))
-        self.filters: Set[FilterFunc] = set()
+        self.filters: List[FilterFunc] = []
         # Either a mapping of each event type (or -1 for any) to a handler, OR
         # if self.multiple is True, a mapping of event type / -1 to a list of handlers.
         self.handlers: Union[Dict[Union[int, str], GenericHandler], Dict[Union[int, str], List[GenericHandler]]] = {}
@@ -450,8 +481,13 @@ class AsyncEventNexus(EventDispatcher, AbstractNexus, EventFactory):
         self.loop_task: Optional[asyncio.Task] = None
 
 
-    def add_handler(self, type: Union[int, str], handler: GenericHandler):
+    def add_handler(self, type: EventTypeID, handler: GenericHandler):
         """
+        Add a conditional event handler, where the type must match.
+
+        A handler is a coroutine function/method with the same signature as
+        :class:`EventConsumer.handle` or an object with an equivalent method.
+
         :param type: The type of event to handle, or -1 for events with no dedicated handler
         :param handler: If it's a Callable, it will be called or if it's a Coroutine it will be awaited
         """
@@ -470,23 +506,46 @@ class AsyncEventNexus(EventDispatcher, AbstractNexus, EventFactory):
 
     def add_filter(self, handler: FilterFunc):
         """
+        Add a filter, which is passed all events and returns ``True`` if a given
+        event is considered consumed, i.e. no further processing by
+        filters/handlers is required.
+
         :param handler: A Callable to be awaited when an event is received
         """
 
-        self.filters.add(handler)
+        self.filters.append(handler)
 
 
     def add_converter(self, converter: SimpleEventConverter) -> None:
+        """
+        Add an Event source used in pull mode.  Its :meth:`EventSource.start`
+        coroutine is awaited by the loop, then the nexus continually awaits its
+        :meth:`SimpleEventConverter.obtain_event` coroutine in the background
+        with all the others.
+        """
+
         self.converters.append(converter)
 
 
     def add_producer(self, producer: EventProducer) -> None:
+        """
+        Add an Event source used in push mode.  Its :meth:`EventProducer.start`
+        coroutine is awaited by the loop, then the nexus takes no further
+        action, as the producer is responsible for calling :meth:`ingest`.
+        """
+
         self.producers.append(producer)
         producer.register_nexus(self)
 
 
     def register(self, item: EventSource):
-        if issubclass(type(item), SimpleEventConverter):
+        """
+        Add an Event source used in push or pull mode.
+
+        Calls :meth:`add_converter` or :meth:`add_producer` as appropriate.
+        """
+
+        if isinstance(item, SimpleEventConverter):
             self.add_converter(item)
         else:
             # Assume it has a start() method, which is the only requirement
@@ -516,14 +575,19 @@ class AsyncEventNexus(EventDispatcher, AbstractNexus, EventFactory):
             # item after the loop condition check by ignoring the exception
             try:
                 event = self.queue.get_nowait()
-                await self.dispatch(event)
+                await self._dispatch(event)
             except asyncio.QueueEmpty:
                 # TODO: release critical section here
                 break
 
 
     # This has to be async so handler coroutines can add secondary events to the queue
-    async def dispatch(self, event: Event) -> None:
+    async def _dispatch(self, event: Event) -> None:
+        """Process the event through the filters and handlers.  
+
+        :raises errors.UnhandledEvent:  If no match for the event is found.
+        """
+
         try:
             if self.multiple:
                 # This would need handlers to be of type FilterFunc
@@ -564,6 +628,9 @@ class AsyncEventNexus(EventDispatcher, AbstractNexus, EventFactory):
         consuming and distributing events from converters.  In parallel to
         this, any registered producers will feed events into the queue
         unprompted.
+
+        Any :class:`SimpleEventConverter` object that raises
+        :class:`errors.NoMoreEvents` will be removed.
         """
 
         if self.state in (self.States.STARTING, self.States.LOOPING):
@@ -618,8 +685,9 @@ class AsyncEventNexus(EventDispatcher, AbstractNexus, EventFactory):
 
     def start(self) -> asyncio.Task:
         """
-        Start the event loop in the background, and return the task to be
-        optionally awaited (if it returns due to error or cancellation).
+        Start the event loop in the background.
+
+        :returns: the task to be optionally awaited (in case it returns due to error or cancellation)
         """
 
         if self.state is not self.States.READY:
@@ -632,10 +700,16 @@ class AsyncEventNexus(EventDispatcher, AbstractNexus, EventFactory):
 
 
     def stop(self):
+        """
+        Stop the task running the loop.  cleanup() must then be run unless in a ``with`` block.
+        """
+
         self.loop_task.cancel()
 
 
     def cleanup(self):
+        """Destroy all producers and converters, then forget all handlers and filters."""
+
         while self.producers:
             producer = self.producers.pop()
             try:
@@ -677,14 +751,20 @@ class EventFanout(EventConsumer):
 
 
     def register(self, handler: GenericHandler):
+        """Add an unconditional event handler."""
+
         self.handlers.add(handler)
 
 
     def deregister(self, handler: GenericHandler):
+        """Remove an unconditional event handler."""
+
         self.handlers.remove(handler)
 
 
     async def handle(self, event: Event, queue: asyncio.Queue) -> None:
+        """Process the event through all handlers."""
+
         if not self.handlers:
             raise errors.MisconfiguredEventConsumer("No handler objects registered")
 

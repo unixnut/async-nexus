@@ -1,3 +1,9 @@
+"""
+Classes for managing the interaction between event domains, each of which
+contains an :class:`async_nexus.AsyncEventNexus` and its associated
+:class:`async_nexus.Event` sources and handlers.
+"""
+
 import asyncio
 
 import async_nexus
@@ -8,7 +14,7 @@ class AsyncEventBoundary(async_nexus.EventProducer, async_nexus.EventConsumer):
     Forwards events between event domains.  This is done by hooking into two
     different nexuses.
 
-    Acts as both a handler registered with :class:`AsyncEventNexus`
+    Acts as both a handler registered with :class:`async_nexus.AsyncEventNexus`
     (``nexus1.add_handler(b)``) in one event domain and a producer
     (``nexus2.add_producer(b)``) in another.
 
@@ -25,17 +31,27 @@ class AsyncEventBoundary(async_nexus.EventProducer, async_nexus.EventConsumer):
 
 
     async def start(self):
+        """
+        Start :meth:`transfer_events` in the background.
+
+        :return asyncio.Task: the task to be optionally awaited (in case it returns due to error or cancellation)
+        """
+
         await super().start()
         self.task = asyncio.create_task(self.transfer_events())
 
+        return self.task
+
 
     async def transfer_events(self):
+        """Continuously feed events from the queue to registered nexuses."""
+
         while True:
             event = await self.queue.get()
             await self.distribute_event(event)
 
 
-    async def handle(self, event: Event, queue: asyncio.Queue) -> None:
+    async def handle(self, event: async_nexus.Event, queue: asyncio.Queue) -> None:
         """
         Handle an event.
 

@@ -19,8 +19,8 @@ asynchronous Python programs.  Allows the creation of loosely-coupled programs
 using async coroutines and generators to create/handle events.  Provides
 convenience classes for common event-related activities such as Timer.
 
-Provides various EventAdapter subclasses for interacting with libraries like
-0mq (ZeroMQ) and other message brokers.
+Provides various :class:`async_nexus.EventSource` subclasses for interacting
+with libraries like 0mq (ZeroMQ) and other message brokers.
 
 
 * Free software: MIT license

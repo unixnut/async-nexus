@@ -1,3 +1,5 @@
+"""Wrapper/helper classes and functions for interfacing with 0mq (ZeroMQ)."""
+
 from typing import Set, Dict, Sequence, Tuple, List, Union, AnyStr, Iterable, Callable, Generator, Type, Optional, TextIO, IO
 
 import weakref
@@ -18,14 +20,14 @@ class ZmqEventConverter(SimpleEventConverter):
 
     Can be used as a context manager (non-async), which closes the socket on exit.
 
-    :ivar event_type:       The numeric type to be used when an event is created
-    :ivar event_factory:    Object used to create :class:`Event` objects
+    :ivar event_type:       Event type or class (subclass of :class:`async_nexus.NamedEvent`) to be used when an event is created
+    :ivar event_factory:    Object used to create :class:`async_nexus.Event` objects
     """
 
     def __init__(self, socket: zmq.Socket, *, event_type: EventTypeID, event_factory: Optional[EventFactory]):
         """
-        :param event_type:      The numeric, string or subclass-of-NamedEvent type, to be used when an event is created
-        :param event_factory:   Optional object that subclasses may use to create :class:`Event` objects
+        :param event_type:      A numeric or string type ID or a subclass of :class:`async_nexus.NamedEvent` (note: a class not an object), to be used when an event is created
+        :param event_factory:   Optional object that subclasses may use to create :class:`async_nexus.Event` objects
         """
 
         ## self.socket = socket
