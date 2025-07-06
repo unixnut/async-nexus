@@ -1,6 +1,6 @@
 #! /usr/bin/python3
 # vim: set fileencoding=utf-8 tabstop=4 shiftwidth=4 :
-# async_events.py (Python script) -- Demonstrate the async_nexus library
+# async_events_zmq.py (Python script) -- Demonstrate the async_nexus library
 #
 # Version:   
 # Copyright: (c)2025 Alastair Irvine <alastair@plug.org.au>
@@ -8,11 +8,14 @@
 # Notice:    
 # Licence:   This file is released under the GNU General Public License
 #
-'''Description: Demonstrate the async_nexus library
-  
-Usage: .venv/bin/python demo/async_events.py
+'''Description: Demonstrate the async_nexus library in combination with ZeroMQ
 
-If you haven't already, run this command before running this program:
+Requires a server that sends on a PUB socket on port 12342.  Strings must start
+with "RX ".
+
+Usage: .venv/bin/python demo/async_events_zmq.py
+
+If you haven't already, run these commands before running this program:
     python3 -m venv .venv
     .venv/bin/pip install -e .
 '''
@@ -37,9 +40,14 @@ import sys
 import getopt
 import asyncio
 import random
+import contextlib
 from enum import IntEnum
 
+import zmq
+
 import async_nexus
+import async_nexus.zmq
+## import async_nexus.converters.zmq
 
 
 # *** DEFINITIONS ***
@@ -49,15 +57,7 @@ allowed_long_options=['help']
 
 
 # *** CLASSES ***
-DemoEventType = IntEnum('DemoEventType', "FIRST SECOND THIRD _MAX")
-
-
-class Treacle(async_nexus.NamedEvent):
-    pass
-
-
-
-class DemoEventProducer(async_nexus.EventProducer):
+class DemoZmqEventProducer(async_nexus.EventProducer):
     """
     :ivar task: asyncio.Task
         :type task: asyncio.Task
@@ -70,32 +70,28 @@ class DemoEventProducer(async_nexus.EventProducer):
 
     async def create_events(self):
         while True:
-            type = random.randint(DemoEventType.FIRST, DemoEventType._MAX - 1)
+            type = 999
             event = self.event_factory.create_event("hello", event_type=type)
             await self.distribute_event(event)
             await asyncio.sleep(0.5)
 
 
 
-class DemoBigEventConverter(async_nexus.EventConverter):
-    """async_nexus.Event source used in pull mode."""
+class DemoZmqEventConverter(async_nexus.zmq.ZmqEventConverter):
+    async def obtain_event(self) -> async_nexus.EventTypeID:
+        """
+        Get a string from the socket then convert it to an event.
 
+        An override that strips RX prefix from string.
+        """
 
-    def __init__(self, id_fn: Callable):
-        super().__init__()
-        self.id_fn = id_fn
-
-
-    async def event_generator(self):
-        while True:
-            yield async_nexus.Event(self.id_fn(), 60, 0, "hi!!!!")
-            await asyncio.sleep(0.4)
-
+        s = await self.socket.recv_string()
+        chunks = s.split(" ", 1)
+        return self.convert_to_event(chunks[1])
 
 
 class DemoEventConverter(async_nexus.SimpleEventConverter):
     """async_nexus.Event source used in pull mode."""
-
 
     def __init__(self, id_fn: Callable):
         super().__init__()
@@ -131,29 +127,12 @@ async def teapot(nexus: async_nexus.AsyncEventNexus) -> None:
     await nexus.ingest(event)
 
 
-async def treacle(nexus: async_nexus.AsyncEventNexus) -> None:
-    await asyncio.sleep(2)
-    event = Treacle(1002, "Where's the crumpets?!")
-    await nexus.ingest(event)
-
-
 async def handler_for_10(event: async_nexus.Event, queue: asyncio.Queue):
     print("[%d] %s" % (event.id, event.payload))
 
 
 async def special_handler(event: async_nexus.Event, queue: asyncio.Queue):
     print("type=%s [%d] %s" % (DemoEventType(event.type).name, event.id, event.payload))
-
-
-async def low_id_filter(event: async_nexus.Event, queue: asyncio.Queue) -> bool:
-    if event.id < 5:
-        try:
-            print("type=%s [[%d]] %s" % (DemoEventType(event.type).name, event.id, event.payload))
-        except ValueError:
-            print("type=%s [[%d]] %s" % (str(event.type), event.id, event.payload))
-        return True
-    else:
-        return False
 
 
 async def ping(event: async_nexus.Event, queue: asyncio.Queue):
@@ -165,37 +144,44 @@ async def default_handler(event: async_nexus.Event, queue: asyncio.Queue):
 
 
 async def go():
-    with async_nexus.AsyncEventNexus() as nexus:
-        fanout = async_nexus.EventFanout()
-        fanout.register(ping)
-        fanout.register(default_handler)
+    ctx = zmq.asyncio.Context()
+    try:
+        ## signal.signal(signal.SIGTERM, lambda: signum, frame: stream.term())
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(ctx)
 
-        nexus.add_filter(low_id_filter)
-        nexus.add_handler(10, handler_for_10)
-        nexus.add_handler(DemoEventType.FIRST, special_handler)
-        nexus.add_handler(DemoEventType.SECOND, special_handler)
-        nexus.add_handler(DemoEventType.THIRD, special_handler)
-        nexus.add_handler(100, fanout)
-        nexus.add_handler(-1, default_handler)
+            nexus = async_nexus.AsyncEventNexus()
+            stack.enter_context(nexus)
 
-        nexus.add_converter(DemoEventConverter(nexus.next_id))
-        nexus.add_converter(DemoBigEventConverter(nexus.next_id))
+            publisher = ctx.socket(zmq.SUB)
+            ## stack.callback(publisher.close, linger=0)
+            publisher.subscribe("RX ")
+            publisher.connect('tcp://localhost:12342')
 
-        # Produces events with random IDs from DemoEventType (not including _MAX)
-        nexus.add_producer(DemoEventProducer(event_factory=nexus))
-        nexus.add_producer(async_nexus.Timer(interval=4, event_type=100, event_factory=nexus))
-        nexus.add_producer(async_nexus.Timer(interval=1.5, type=async_nexus.Timer.COUNT_UP, count=7, event_type=101, event_factory=nexus))
+            # Use a custom version that alters the received string
+            ## zeq = async_nexus.zmq.ZmqEventConverter(publisher, event_type=998, event_factory=nexus)
+            zeq = DemoZmqEventConverter(publisher, event_type=998, event_factory=nexus)
+            stack.enter_context(zeq)
 
-        teapot_task = asyncio.create_task(teapot(nexus))
-        treacle_task = asyncio.create_task(treacle(nexus))
+            stack.callback(print, "Cleaning up...")
 
-        ## await nexus.loop_forever()
-        try:
-            await asyncio.wait_for(nexus.start(), 7)
-        except (TimeoutError, asyncio.exceptions.TimeoutError):
-            print("Done.")
+            nexus.add_handler(10, handler_for_10)
+            nexus.add_handler(-1, default_handler)
 
-    ## print(nexus.filters)
+            nexus.add_converter(DemoEventConverter(nexus.next_id))
+            nexus.add_converter(zeq)
+
+            ## nexus.add_producer(DemoZmqEventProducer)
+            nexus.add_producer(async_nexus.Timer(interval=4, event_type=100, event_factory=nexus))
+            nexus.add_producer(async_nexus.Timer(interval=1.5, type=async_nexus.Timer.COUNT_UP, count=7, event_type=101, event_factory=nexus))
+
+            teapot_task = asyncio.create_task(teapot(nexus))
+
+            await nexus.loop_forever()
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        print(str(e))
 
 
 # *** MAINLINE ***

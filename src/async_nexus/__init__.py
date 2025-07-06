@@ -81,11 +81,11 @@ class EventConsumer(metaclass=abc.ABCMeta):
 
 # If a Callable it should actually be a coroutine function, or if a
 # :class:`EventConsumer` is used its ``handle`` method be a coroutine function
-HandlerType = Union[Callable[[Event, asyncio.Queue], None], EventConsumer]
-FilterType = Callable[[Event, asyncio.Queue], bool]
+GenericHandler = Union[Callable[[Event, asyncio.Queue], None], EventConsumer]
+FilterFunc = Callable[[Event, asyncio.Queue], bool]
 # This is needed to satisfy the type checker; see `help(typing.Type)`
 NamedEventTypeVar = TypeVar('NamedEventTypeVar', bound=NamedEvent)
-EventType = Union[int, str, Type[NamedEventTypeVar]]
+EventTypeID = Union[int, str, Type[NamedEventTypeVar]]
 
 
 class AsyncEventPriorityQueue(metaclass=abc.ABCMeta):
@@ -125,7 +125,7 @@ class EventFactory:
         return random.randint(1, 1000)
 
 
-    def create_event(self, payload, *, event_type: EventType, id: int = AUTO, priority: int = 0) -> Event:
+    def create_event(self, payload, *, event_type: EventTypeID, id: int = AUTO, priority: int = 0) -> Event:
         """
         Convenient wrapper around :class:`Event` constructor.  Also handles
         NamedEvent subclasses.
@@ -302,7 +302,7 @@ class Timer(EventProducer):
     ONE_SHOT   = 4  # Equivalent to COUNT_UP with count=1
 
 
-    def __init__(self, interval: float, *, event_type: EventType, type: int = ONE_SHOT, count: int = 0, event_factory: Optional[EventFactory] = None):
+    def __init__(self, interval: float, *, event_type: EventTypeID, type: int = ONE_SHOT, count: int = 0, event_factory: Optional[EventFactory] = None):
         """
         :param event_factory:  Required unless a subclass overrides :method:`timer_fired` to create events
         """
@@ -401,8 +401,8 @@ class Timer(EventProducer):
 
 class AsyncEventNexus(EventDispatcher, AbstractNexus, EventFactory):
     """
-    Distributes events to filters (see alias :class:`FilterType`) and/or
-    handlers (see alias :class:`HandlerType`) which must also accept a second
+    Distributes events to filters (see alias :class:`FilterFunc`) and/or
+    handlers (see alias :class:`GenericHandler`) which must also accept a second
     argument, being the queue into which any secondary events are added.
 
     Can act as a context manager (non-async), which calls :meth:`cleanup`.
@@ -438,10 +438,10 @@ class AsyncEventNexus(EventDispatcher, AbstractNexus, EventFactory):
             raise NotImplementedError
         # A map of predicates that can choose to accept an event or pass it on
         # (and if none accept it it will be given to the handler(s))
-        self.filters: Set[FilterType] = set()
+        self.filters: Set[FilterFunc] = set()
         # Either a mapping of each event type (or -1 for any) to a handler, OR
         # if self.multiple is True, a mapping of event type / -1 to a list of handlers.
-        self.handlers: Union[Dict[Union[int, str], HandlerType], Dict[Union[int, str], List[HandlerType]]] = {}
+        self.handlers: Union[Dict[Union[int, str], GenericHandler], Dict[Union[int, str], List[GenericHandler]]] = {}
         self.queue = asyncio.Queue(maxsize=self.QUEUE_MAXLEN)
         self.multiple = multiple
         self.converters = []
@@ -450,7 +450,7 @@ class AsyncEventNexus(EventDispatcher, AbstractNexus, EventFactory):
         self.loop_task: Optional[asyncio.Task] = None
 
 
-    def add_handler(self, type: Union[int, str], handler: HandlerType):
+    def add_handler(self, type: Union[int, str], handler: GenericHandler):
         """
         :param type: The type of event to handle, or -1 for events with no dedicated handler
         :param handler: If it's a Callable, it will be called or if it's a Coroutine it will be awaited
@@ -468,7 +468,7 @@ class AsyncEventNexus(EventDispatcher, AbstractNexus, EventFactory):
                 raise LookupError("Handler for type %s already present" % type)
 
 
-    def add_filter(self, handler: FilterType):
+    def add_filter(self, handler: FilterFunc):
         """
         :param handler: A Callable to be awaited when an event is received
         """
@@ -526,7 +526,7 @@ class AsyncEventNexus(EventDispatcher, AbstractNexus, EventFactory):
     async def dispatch(self, event: Event) -> None:
         try:
             if self.multiple:
-                # This would need handlers to be of type FilterType
+                # This would need handlers to be of type FilterFunc
                 ## for handler in self.handlers[event.type]:
                 ##     handled = await handler(event, self.queue)
                 ##     if handled:
@@ -673,14 +673,14 @@ class EventFanout(EventConsumer):
     """
 
     def __init__(self):
-        self.handlers: Set[HandlerType] = set()
+        self.handlers: Set[GenericHandler] = set()
 
 
-    def register(self, handler: HandlerType):
+    def register(self, handler: GenericHandler):
         self.handlers.add(handler)
 
 
-    def deregister(self, handler: HandlerType):
+    def deregister(self, handler: GenericHandler):
         self.handlers.remove(handler)
 
 
@@ -703,7 +703,7 @@ class EventDiscarder(EventConsumer):
 
 
 # *** FUNCTIONS ***
-def create_handler_coro(handler: Union[HandlerType, FilterType], event: Event, queue: asyncio.Queue) -> Coroutine:
+def create_handler_coro(handler: Union[GenericHandler, FilterFunc], event: Event, queue: asyncio.Queue) -> Coroutine:
     """
     Supports calling dynamic handlers that are either a coroutine
     function/method, or a :class:`EventConsumer` object.  Note that this
