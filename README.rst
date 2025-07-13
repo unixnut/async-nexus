@@ -14,13 +14,20 @@ Async Nexus
         :alt: Documentation Status
 
 
-Library to manage the transfer of data using lightweight Event objects in
-asynchronous Python programs.  Allows the creation of loosely-coupled programs
-using async coroutines and generators to create/handle events.  Provides
-convenience classes for common event-related activities such as Timer.
+Library to manage the transfer of data using lightweight Event objects
+in asynchronous Python programs.  Allows the creation of loosely-coupled
+programs using async coroutines and generators to create/handle events.
+Provides convenience classes for common event-related activities such as
+Timer.
 
-Provides various :class:`async_nexus.EventSource` subclasses for interacting
-with libraries like 0mq (ZeroMQ) and other message brokers.
+It provides various :class:`async_nexus.EventSource` subclasses for
+interacting with libraries like 0mq (ZeroMQ) and other message brokers.
+
+``async_nexus`` is designed to let you structure your programs and their
+interactions in the way that you want.  It uses a pluggable event
+architecture with which you can change the way that events are created
+and consumed, and add a variety of ultimate sources, without having to
+redesign your program as it grows.
 
 
 * Free software: MIT license
