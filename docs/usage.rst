@@ -166,7 +166,13 @@ Context Managers
 
 E.g.::
 
-    with async_nexus.AsyncEventNexus() as nexus
+    with async_nexus.AsyncEventNexus() as nexus:
+        ...
+        nexus.loop_forever()
+
+This will correctly call :meth:`async_nexus.AsyncEventNexus.cleanup`
+even if an exception is thrown or
+:meth:`async_nexus.AsyncEventNexus.stop` is called.
 
 Event buses
 -----------
