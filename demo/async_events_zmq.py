@@ -135,6 +135,10 @@ async def special_handler(event: async_nexus.Event, queue: asyncio.Queue):
     print("type=%s [%d] %s" % (DemoEventType(event.type).name, event.id, event.payload))
 
 
+async def full_handler(event: async_nexus.Event, queue: asyncio.Queue):
+    print("type=%s,pri=%d [%d] %s" % (str(event.type), event.priority, event.id, event.payload))
+
+
 async def ping(event: async_nexus.Event, queue: asyncio.Queue):
     print("ping!")
 
@@ -163,13 +167,21 @@ async def go():
             zeq = DemoZmqEventConverter(publisher, event_type=998, event_factory=nexus)
             stack.enter_context(zeq)
 
+            # Receive full events
+            server_socket = ctx.socket(zmq.PULL)
+            server_socket.bind('tcp://*:12346')
+            receiver = async_nexus.zmq.ZmqEventReceiver(server_socket)
+            stack.enter_context(receiver)
+
             stack.callback(print, "Cleaning up...")
 
             nexus.add_handler(10, handler_for_10)
-            nexus.add_handler(-1, default_handler)
+            ## nexus.add_handler(-1, default_handler)
+            nexus.add_handler(-1, full_handler)
 
             nexus.add_converter(DemoEventConverter(nexus.next_id))
             nexus.add_converter(zeq)
+            nexus.add_converter(receiver)
 
             ## nexus.add_producer(DemoZmqEventProducer)
             nexus.add_producer(async_nexus.Timer(interval=4, event_type=100, event_factory=nexus))
