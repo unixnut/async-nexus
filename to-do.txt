@@ -1,3 +1,3 @@
   + README.rst:Features
   + Check docs/{history.rst,contributing.rst} vs. CONTRIBUTING.rst and HISTORY.rst
-  + Update docs/usage.rst
+  + [DONE] Update docs/usage.rst
