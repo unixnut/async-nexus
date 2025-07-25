@@ -57,9 +57,9 @@ If you are proposing a feature:
 Get Started!
 ------------
 
-Ready to contribute? Here's how to set up `async-nexus` for local development.
+Ready to contribute? Here's how to set up **async-nexus** for local development.
 
-1. Fork the `async-nexus` repo on GitHub.
+1. Fork the |REPO|_.
 2. Clone your fork locally::
 
     $ git clone git@github.com:your_name_here/async-nexus.git
@@ -126,3 +126,6 @@ $ git push
 $ git push --tags
 
 Travis will then deploy to PyPI if tests pass.
+
+.. |REPO| replace:: *async-nexus* repo on GitHub
+.. _REPO: https://github.com/unixnut/async-nexus

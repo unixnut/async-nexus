@@ -2,7 +2,7 @@
 
 __author__ = """Alastair Irvine"""
 __email__ = 'alastair@plug.org.au'
-__version__ = '0.1.0'
+__version__ = '1.0.0'
 
 
 from typing import Set, Dict, Sequence, Tuple, List, Union, AnyStr, Iterable, Callable, Generator, Type, TypeVar, Optional, TextIO, IO, Coroutine
